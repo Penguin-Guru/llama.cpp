@@ -653,6 +653,7 @@ struct server_tool_exec_shell_command : server_tool {
             // Iterate through potential segment of commands.
             const char *cur = command.data();
             static const auto ssbl_len = strlen(shell_symbol_blacklist);
+            static const auto sd_len = strlen(shell_delims);
             do {
                 // Skip irrelevant symbols.
                 cur += strspn(cur, shell_delims);
@@ -661,13 +662,32 @@ struct server_tool_exec_shell_command : server_tool {
 
                 // Check whether beginning of potential segment matches a string (program name) in the whitelist.
                 bool whitelisted = false;
+                auto entry_len = 0; // Allows for adjustable error message.
                 for (auto const & s : *s_shell_command_whitelist) {
                     // Check against size of whitelist entry, to prevent matching prefix.
+                    auto prog_len = 0;
+
                     if (
-                        s.length() < strcspn(cur, shell_delims)
+                        // Test: entry is shorter than program name/path.
+                        s.length() < (prog_len = strcspn(cur, shell_delims))
+                        // Test: (full) entry matches (at least beginning of) program name/path.
                         || memcmp(cur, s.data(), s.length())
                     ) continue;
-                    // Command segment matches whitelist entry.
+                    // Command segment matches all of a whitelist entry.
+
+                    // Does the whitelist entry cross the term boundry?
+                    if (s.length() > prog_len) {
+                        // Whitelist entry crosses term boundry: has required argument(s).
+                        // E.g. `ls -l` (whitelisted) --> `ls -la` (error output)
+                        if (
+                            // Test: ends at end of command string.
+                            cur + s.length() == command.data() + command.length()
+                            // Test: ends immediately before a `shell_delims` symbol.
+                            || memchr(shell_delims, *(cur + s.length()), sd_len)
+                        ) entry_len = s.length() + 1;   // We know s.length() is longer.
+                        } else break;   // Reject non-delimited continuation of the argument.
+                    }
+                    // Potential segment meets whitelist criteria.
 
                     // Check for disallowed symbols.
                     for (
@@ -686,7 +706,7 @@ struct server_tool_exec_shell_command : server_tool {
                 }
                 if (!whitelisted) return {{"error", string_format(
                     "Command rejected! Program is not permitted by whitelist: \"%.*s\"",
-                    (int)strcspn(cur, shell_delims), cur
+                    entry_len ? entry_len : (int)strcspn(cur, shell_delims), cur
                 )}};
                 // Potential segment seems safe.
             } while (*(cur += strcspn(cur, shell_cmd_delims))); // End on first null.
